@@ -1,0 +1,287 @@
+<?php
+
+/**
+ * Implements hook_action_info().
+ */
+function farm_sendLIS_action_info(){
+  return array(
+    'farm_sendLIS_action' => array(
+      'type' => 'farm_asset',
+      'label' => t('Send'),
+      'configurable' => TRUE,
+      'triggers' => array('any'),
+      'aggregate' => TRUE,
+    ),
+  );
+}
+
+
+
+/**
+ * Configuration form for farm_sendLIS_action.
+ *
+ * @param array $context
+ *   The context passed into the action form function.
+ * @param array $form_state
+ *   The form state passed into the action form function.
+ *
+ * @return array
+ *   Returns a form array.
+ */
+function farm_sendLIS_action_form(array $context, array $form_state) {
+  $destinationTypes =array(
+    'holding' => t('Another Farm'),
+        'abattoir' => t('Abattoir'),
+        'Market' => t('Market'),
+        'isolation' => t('Isolation Unit'),
+        'exhibition' => t('Exhibition'),
+        'disposal' => t('Disposal/Knackers Yard/Hunt'),
+        'other' => t('Other'),
+  );
+
+  variable_set('farm_sendLIS_destinations', $destinationTypes);
+
+  // Date field.
+  $form['date'] = array(
+    '#type' => 'date_popup',
+    '#date_format' => 'Y-m-d',
+    '#title' => t('Date sent'),
+    '#date_type' => DATE_FORMAT_UNIX,
+    '#date_year_range' => '-10:+3',
+    '#default_value' => date('Y-m-d', REQUEST_TIME),
+    '#required' => TRUE,
+  );
+  
+  $form['location_type'] = array(
+    '#type' => 'select',
+    '#title' => t('Destination type'),
+    '#options' => variable_get('farm_sendLIS_destinations', $destinationTypes),
+    '#required' => TRUE,
+    '#default_value' => 'holding',
+    '#description' => t('The type of location the animals are being moved to'),
+  );
+
+  $form['destination'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Destination'),
+    '#description' => t('The name of the location the animals are being moved to (will autofill, or create a new location if it doesn\'t exist)'),
+    '#required' => TRUE,
+    '#autocomplete_path' => 'taxonomy/autocomplete/field_farm_area',
+  );
+
+  $form['destinationCPH'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Destination CPH'),
+    '#description' => t('CPH Number of the destination, if known.'),
+    '#required' => FALSE,
+  );
+
+  $form['archive'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Archive'),
+    '#description' => t('Archive the animals after sending them.'),
+    '#default_value' => TRUE,
+  );
+
+  // Return the form.
+  return $form;
+}
+
+/**
+ * Submit handler for farm_sendLIS_action configuration form.
+ *
+ * @param array $form
+ *   The form array.
+ * @param array $form_state
+ *   The form state array.
+ *
+ * @return array
+ *   Returns an array that will end up in the action's context.
+ */
+function farm_sendLIS_action_submit(array $form, array $form_state) {
+
+  // Start to build the context array.
+  $context = array();
+
+  // Convert the date to a timestamp.
+  $timestamp = strtotime($form_state['values']['date']);
+
+  // The action form only includes month, day, and year. If the movement is
+  // today, then we assume that the current time should also be included.
+  if (date('Ymd', $timestamp) == date('Ymd', REQUEST_TIME)) {
+    $context['timestamp'] = REQUEST_TIME;
+    $context['today'] = TRUE;
+
+  }
+
+  // Otherwise, the movement is in the past/future, so don't include a time.
+  else {
+    $context['timestamp'] = $timestamp;
+    $context['today'] = FALSE;
+  }
+
+  // Add the other form values to the context.
+  $context['location_type'] = $form_state['values']['location_type'];
+  $context['destination'] = $form_state['values']['destination'];
+  $context['destinationCPH'] = $form_state['values']['destinationCPH'];
+  $context['archive'] = $form_state['values']['archive'];
+  
+
+  // Return the context array.
+  return $context;
+}
+
+/**
+ * Implements hook_action_execute().
+ */
+
+function farm_sendLIS_action(array $assets, $context = array()) {
+  
+  
+ 
+  // If we're missing bits from the form, don't do anything.
+  if (empty($assets) || empty($context['location_type']) || empty($context['destination']) || empty($context['timestamp'] )) {
+    drupal_set_message(t('Couldn\t record movement, as some information is missing, please retry.'), 'error');
+    return;
+
+  } else {
+    // Get archive at this point, as we can archive the assets as we get their tag numbers.
+    $archive = $context['archive'];
+    $timestamp = $context['timestamp'];
+    $list_of_tags = array();
+    // Go through the assets, and extract all the tag numbers
+
+    foreach ($assets as $asset){
+      
+      // If archive is set, archive the asset at this point.
+      $entity_wrapper = entity_metadata_wrapper('farm_asset', $asset);
+      if (!empty($archive)) {
+        $entity_wrapper->archived->set($timestamp);
+        $entity_wrapper->save();
+      }
+
+      // Get the field collection for the asset
+      $tag_collection = field_collection_item_load($asset->field_farm_animal_tag['und'][0]['value']);
+
+      // If there is a tag ID in the collection, get the actual tag number.
+      if (!empty($tag_collection)){
+        $tag_id = $tag_collection->field_farm_animal_tag_id['und'][0]['value'];
+
+        // Add the tag number to the list of tags.
+        $list_of_tags[] = $tag_id;
+      }else{
+        drupal_set_message(t('Couldn\t record one animal, as the ear tag number is missing'), 'error');
+        $tag_id = 0;
+      }
+    }
+
+    // Sort directories for storing the csv file
+    $config = field_info_instance('log','field_farm_files','farm_observation');
+    $file_directory = $config['settings']['file_directory'];
+    $scheme = variable_get('file_default_scheme', 'public');
+    $directory = $scheme . '://'. $file_directory;
+    file_prepare_directory($directory, FILE_CREATE_DIRECTORY);
+
+    // Create a new file entity.
+    $filename = 'LIS_' . date('Ymd-His', $context['timestamp']) . '.csv';
+    $filepath = $directory . '/' . $filename;
+
+    // Write the contents of the tags list to the csv file
+    $filecontent = "";
+    foreach ($list_of_tags as $tag){
+      $filecontent .= $tag . "\r\n";
+    };
+  
+    // Save the contents to the file.
+    $file = file_save_data($filecontent, $filepath, FILE_EXISTS_REPLACE);
+    $file->status = 0; // Set the file status to 0 (unpublished). Change to FILE_STATUS_PERMANENT to save it to the log
+    $file_id = $file->fid;
+    file_save($file);    
+    // Get the values from context
+
+    $location_type = variable_get('farm_sendLIS_destinations', array())[$context['location_type']];
+    
+    $destination = $context['destination'];
+    // Get the area asset of the destination.
+    $areas = farm_term_parse_names($destination, 'farm_areas', TRUE);
+
+    $destinationCPH = $context['destinationCPH'];
+
+    
+
+    $today = $context['today'];
+
+    $log_type = 'farm_observation';
+    $log_title = t('Movement to @destination', array('@destination' => $destination));
+    $notes = t("Moved to @destination on @date\r\n", array('@destination' => $destination, '@date' => date('Y-m-d', $timestamp)));
+    $notes .= t("Location type: @location_type\r\n", array('@location_type' => $location_type));
+    if (!empty($destinationCPH)) {
+      $notes .= t("Destination CPH: @destinationCPH\r\n", array('@destinationCPH' => $destinationCPH));
+    }
+    
+    $notes .= t("Tag numbers:\r\r @tags\r\n", array('@tags' => implode("\r\n", $list_of_tags)));
+    $notes .= t('See attached csv file for tag list - for submission to LIS or ARAMS');
+
+
+    // Create a new observation log.
+    $log = farm_log_create($log_type, $log_title, $timestamp, $today, $assets,$notes, $categories=array('Animal Movement','Animals','LIS'));
+    $file = file_load($file_id);
+    $file->status = FILE_STATUS_PERMANENT;
+    file_save($file);
+    // Add the file to the log
+    $log_wrapper = entity_metadata_wrapper('log', $log);
+    $log_wrapper->field_farm_files[] = array('fid' => $file_id, 'display' => 1);
+
+    // Add areas to the log
+
+    foreach ($areas as $area){
+      $log_wrapper->field_farm_area[] = $area;
+    }
+
+    // Save the log.
+    $log_wrapper->save();
+
+    //Create movemen log too
+    $movement_log = farm_movement_create($assets, $areas, $timestamp, 'farm_activity', $today);
+    $movement_wrapper = entity_metadata_wrapper('log', $movement_log);
+
+
+    $message = t('The file %filename has been created. <a href="!path">Click here to download it.</a>');
+    $args = array(
+      '%filename' => $filename,
+      '!path' => file_create_url($file->uri),
+    );
+    drupal_set_message(t($message, $args));
+  }
+}
+
+
+
+/**
+ * Implements hook_views_api().
+ */
+function farm_sendLIS_views_api($module = NULL, $api = NULL) {
+  return array("api" => "3.0");
+}
+
+function farm_sendLIS_views_default_views_alter(&$views) {
+
+  // Add the send VBO operation to the animals view.
+  if (!empty($views['farm_animals'])) {
+
+    $views['farm_animals']->display['default']->display_options['fields']['views_bulk_operations']['vbo_operations'] += [
+      'action::farm_sendLIS_action' => [
+        'selected' => 1,
+        'skip_confirmation' => 0,
+        'skip_permission_check' => 1,
+        'override_label' => 0,
+        'label' => '',
+      ],
+    ];
+  }
+}
+
+function wrap_implode($array, $before='', $after='', $separator=', ') {
+  if (!$array) return '';
+  return $before . implode("{$after}{$separator}{$before}", $array) . $after;
+}

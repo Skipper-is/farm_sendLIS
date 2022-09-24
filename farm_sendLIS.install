@@ -1,0 +1,22 @@
+<?php
+/**
+ * @file
+ * Farm quick move install. Modified from all sorts!
+ */
+
+/**
+ * Install the Farm Quick Forms module.
+ */
+function farm_sendLIS_update_7000(&$sandbox) {
+  $module = 'farm_quick';
+  if (!module_exists($module)) {
+    module_enable(array($module));
+  }
+}
+
+/**
+ * Ensure that the move quick form is enabled.
+ */
+function farm_sendLIS_update_7001(&$sandbox) {
+
+}

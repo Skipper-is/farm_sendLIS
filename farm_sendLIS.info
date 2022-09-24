@@ -1,0 +1,7 @@
+name = Movement/LIS Sender
+description = Adds a send button to export animals for LIS
+core = 7.x
+package = farmOS Contrib
+dependencies[] = farm_asset
+dependencies[] = farm_livestock
+dependencies[] = farm_log_activity
