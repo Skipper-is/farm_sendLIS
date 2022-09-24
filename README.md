@@ -2,6 +2,7 @@
  FarmOS module to create a .csv file for submission to ARAMS/LIS 
  
 ![Animation to show the functionality](MovementSenderGif.gif)
+
 You can select the animals from the animal list, and press Send in the action menu at the bottom.
 From here, you select the destination type, the name of the destination, and the CPH number of the destination.
 You can also choose whether you want to Archive the animals at the same time.
